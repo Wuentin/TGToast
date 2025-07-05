@@ -380,6 +380,17 @@ void StealAndDelegate(ULONG pid, wchar_t* domainnameArg, wchar_t* spnArg) {
     CloseHandle(hToken);
 }
 
+void printToaster() {
+    wprintf(L"\n");
+    wprintf(L"      _   __           __________________                 __ \n");
+    wprintf(L"     ( `^` ))         /_  __/ ____/_  __/___  ____ ______/ /_ \n");
+    wprintf(L"     |     ||          / / / / __  / / / __ \\/ __ `/ ___/ __/\n");
+    wprintf(L"     |     ||         / / / /_/ / / / / /_/ / /_/ (__  ) /_  \n");
+    wprintf(L"     '-----'`        /_/  \\____/ /_/  \\____/\\__,_/____/\\__/  \n");
+    wprintf(L"\n");
+    fflush(stdout);
+}
+
 void PrintUsage(const wchar_t* progName) {
     wprintf(L"\nTool to perform TGT delegation abuse, with token stealing capabilities.\n\n");
     wprintf(L"Usage: %s <option> [arguments]\n\n", progName);
@@ -392,6 +403,7 @@ void PrintUsage(const wchar_t* progName) {
 
 
 int wmain(int argc, wchar_t* argv[]) {
+    printToaster();
     if (argc < 2) {
         PrintUsage(argv[0]);
         return 1;
