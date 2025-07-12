@@ -97,7 +97,6 @@ AES256
 
 ## ToDo
 - Code rework, the current code is a poc, not the definitive code (and it's ugly)
-- Fix: /list (foreign domain users are not shown).
 - Extract TGT from ap-req using Session Key
 
 ## Credits
