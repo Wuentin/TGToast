@@ -94,6 +94,10 @@ AES256
 ----------------------------------------------------------------------------
 [*] TGT delegation attempt finished. Reverting to original identity.
 ```
+# Limits
+There are a few limitations,it doesn't work if the target accounts are:
+- member of protected users;
+- account is sensitive and cannot be delegated.
 
 ## ToDo
 - Code rework, the current code is a poc, not the definitive code (and it's ugly)
