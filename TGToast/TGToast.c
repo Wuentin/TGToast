@@ -53,28 +53,56 @@ HANDLE GetCurrentToken() {
     return hToken;
 }
 
-BOOL GetTokenUserW(_In_ HANDLE hToken, _Out_ LPWSTR szUsername, _In_ DWORD cchMax) {
-    BYTE buffer[256];
-    PTOKEN_USER pTokenUser = (PTOKEN_USER)buffer;
-    DWORD dwLength = sizeof(buffer);
-    WCHAR szName[128], szDomain[128];
-    DWORD cchName = 128, cchDomain = 128;
-    SID_NAME_USE sidUse;
+BOOL GetTokenUserW(_In_ HANDLE hToken, _Out_ LPWSTR* szUsername) {
+    DWORD dwBufferSize = 0;
+    PTOKEN_USER pTokenUser = NULL;
+    SID_NAME_USE sidType;
+    WCHAR domainName[256];
+    WCHAR userName[256];
+    DWORD domainNameSize = 256;
+    DWORD userNameSize = 256;
+    BOOL bResult = FALSE;
 
-    if (!szUsername || cchMax == 0) return FALSE;
-    szUsername[0] = L'\0';
+    if (!szUsername) return FALSE;
+    *szUsername = NULL;
 
-    if (!GetTokenInformation(hToken, TokenUser, pTokenUser, dwLength, &dwLength)) {
+    // Get size to alloc
+    GetTokenInformation(hToken, TokenUser, NULL, 0, &dwBufferSize);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
         return FALSE;
     }
 
-    if (!LookupAccountSidW(NULL, pTokenUser->User.Sid, szName, &cchName,
-        szDomain, &cchDomain, &sidUse)) {
+    // Alloc
+    pTokenUser = (PTOKEN_USER)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwBufferSize);
+    if (pTokenUser == NULL) {
         return FALSE;
     }
 
-    swprintf_s(szUsername, cchMax, L"%s\\%s", szDomain, szName);
-    return TRUE;
+    // Get token info
+    if (!GetTokenInformation(hToken, TokenUser, pTokenUser, dwBufferSize, &dwBufferSize)) {
+        HeapFree(GetProcessHeap(), 0, pTokenUser);
+        return FALSE;
+    }
+
+    // Lookup account SID to get username
+    if (!LookupAccountSidW(NULL, pTokenUser->User.Sid, userName, &userNameSize,
+        domainName, &domainNameSize, &sidType)) {
+        HeapFree(GetProcessHeap(), 0, pTokenUser);
+        return FALSE;
+    }
+
+    DWORD totalSize = domainNameSize + 1 + userNameSize + 1;
+    *szUsername = (LPWSTR)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, totalSize * sizeof(WCHAR));
+    if (!*szUsername) {
+        HeapFree(GetProcessHeap(), 0, pTokenUser);
+        return FALSE;
+    }
+
+    swprintf_s(*szUsername, totalSize, L"%s\\%s", domainName, userName);
+    bResult = TRUE;
+
+    HeapFree(GetProcessHeap(), 0, pTokenUser);
+    return bResult;
 }
 
 int forgeTGT(wchar_t* spn, int encType)
@@ -215,8 +243,7 @@ int forgeTGT(wchar_t* spn, int encType)
 BOOL ListProcesses() {
     HANDLE hSnap = INVALID_HANDLE_VALUE;
     PROCESSENTRY32W pe32;
-    WCHAR szCurrentUser[256];
-    WCHAR szProcessUser[256];
+    LPWSTR szCurrentUser = NULL;
     HANDLE hCurrentToken = NULL;
     LPWSTR szDomainName = NULL;
     NETSETUP_JOIN_STATUS joinStatus;
@@ -237,7 +264,7 @@ BOOL ListProcesses() {
     wprintf(L"[*] Machine is joined to domain: %s\n", szDomainName);
 
     hCurrentToken = GetCurrentToken();
-    if (!hCurrentToken || !GetTokenUserW(hCurrentToken, szCurrentUser, 256)) {
+    if (!hCurrentToken || !GetTokenUserW(hCurrentToken, &szCurrentUser)) {
         wprintf(L"[-] Could not get current user.\n"); fflush(stdout);
         if (hCurrentToken) CloseHandle(hCurrentToken);
         NetApiBufferFree(szDomainName);
@@ -252,6 +279,7 @@ BOOL ListProcesses() {
 
     hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnap == INVALID_HANDLE_VALUE) {
+        HeapFree(GetProcessHeap(), 0, szCurrentUser);
         NetApiBufferFree(szDomainName);
         return FALSE;
     }
@@ -259,6 +287,7 @@ BOOL ListProcesses() {
     pe32.dwSize = sizeof(PROCESSENTRY32W);
     if (!Process32FirstW(hSnap, &pe32)) {
         CloseHandle(hSnap);
+        HeapFree(GetProcessHeap(), 0, szCurrentUser);
         NetApiBufferFree(szDomainName);
         return FALSE;
     }
@@ -268,28 +297,32 @@ BOOL ListProcesses() {
         if (hProcess) {
             HANDLE hToken = NULL;
             if (OpenProcessToken(hProcess, TOKEN_QUERY, &hToken)) {
-                if (GetTokenUserW(hToken, szProcessUser, 256)) {
+                LPWSTR szProcessUser = NULL;
+                if (GetTokenUserW(hToken, &szProcessUser) && szProcessUser) {
                     if (_wcsicmp(szCurrentUser, szProcessUser) != 0) {
                         wchar_t* separator = wcschr(szProcessUser, L'\\');
                         if (separator) {
-                            size_t domainLen = separator - szProcessUser;
-                            WCHAR domainPart[128];
-                            wcsncpy_s(domainPart, 128, szProcessUser, domainLen);
-                            domainPart[domainLen] = L'\0';
+                            LPWSTR domainPart = (LPWSTR)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (separator - szProcessUser + 1) * sizeof(WCHAR));
+                            if (domainPart) {
+                                wcsncpy_s(domainPart, separator - szProcessUser + 1, szProcessUser, separator - szProcessUser);
 
-                            BOOL isLocalAccount = (_wcsicmp(domainPart, L"NT AUTHORITY") == 0 ||
-                                _wcsicmp(domainPart, L"BUILTIN") == 0 ||
-                                _wcsicmp(domainPart, L"NT SERVICE") == 0 ||
-                                _wcsicmp(domainPart, L"WINDOW MANAGER") == 0 ||
-                                _wcsicmp(domainPart, L"FONT DRIVER HOST") == 0 ||
-                                wcschr(domainPart, L'$') != NULL);
+                                BOOL isLocalAccount = (_wcsicmp(domainPart, L"NT AUTHORITY") == 0 ||
+                                    _wcsicmp(domainPart, L"BUILTIN") == 0 ||
+                                    _wcsicmp(domainPart, L"NT SERVICE") == 0 ||
+                                    _wcsicmp(domainPart, L"WINDOW MANAGER") == 0 ||
+                                    _wcsicmp(domainPart, L"FONT DRIVER HOST") == 0 ||
+                                    wcschr(domainPart, L'$') != NULL);
 
-                            if (!isLocalAccount) {
-                                wprintf(L"%-6lu | %-40s | %s\n", pe32.th32ProcessID, szProcessUser, pe32.szExeFile);
-                                fflush(stdout);
+                                if (!isLocalAccount) {
+                                    wprintf(L"%-6lu | %-40s | %s\n", pe32.th32ProcessID, szProcessUser, pe32.szExeFile);
+                                    fflush(stdout);
+                                }
+
+                                HeapFree(GetProcessHeap(), 0, domainPart);
                             }
                         }
                     }
+                    HeapFree(GetProcessHeap(), 0, szProcessUser);
                 }
                 CloseHandle(hToken);
             }
@@ -298,15 +331,15 @@ BOOL ListProcesses() {
     } while (Process32NextW(hSnap, &pe32));
 
     CloseHandle(hSnap);
+    HeapFree(GetProcessHeap(), 0, szCurrentUser);
     NetApiBufferFree(szDomainName);
     return TRUE;
 }
 
-
 void StealAndDelegate(ULONG pid, wchar_t* domainnameArg, wchar_t* spnArg, int encType) {
     HANDLE hToken = NULL;
     HANDLE hCurrentToken = GetCurrentToken();
-    WCHAR szTokenUser[256];
+    LPWSTR szTokenUser = NULL;
 
     if (hCurrentToken) {
         if (SetPrivilege(hCurrentToken, L"SeDebugPrivilege")) {
@@ -329,9 +362,11 @@ void StealAndDelegate(ULONG pid, wchar_t* domainnameArg, wchar_t* spnArg, int en
     }
     CloseHandle(hProcess);
 
-    if (GetTokenUserW(hToken, szTokenUser, 256)) {
+    if (GetTokenUserW(hToken, &szTokenUser)) {
         wprintf(L"[+] Successfully stole token from user: %s\n", szTokenUser); fflush(stdout);
+        HeapFree(GetProcessHeap(), 0, szTokenUser);
     }
+
     else {
         wprintf(L"[+] Successfully stole token from user: UNKNOWN\n"); fflush(stdout);
     }
