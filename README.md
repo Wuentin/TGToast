@@ -129,6 +129,8 @@ There are a few limitations, it doesn't work if the target accounts are:
 
 ## Credits
 Many thanks to these projects, all I did was put the ideas together.
+- [Kekeo](https://github.com/gentilkiwi/kekeo)
+- [Rubeus-now-with-more-kekeo](https://blog.harmj0y.net/redteaming/rubeus-now-with-more-kekeo/)
 - [Rubeus](https://github.com/GhostPack/Rubeus)
 - [https://github.com/GhostPack/Rubeus/blob/master/Rubeus/lib/LSA.cs](https://github.com/GhostPack/Rubeus/blob/master/Rubeus/lib/LSA.cs)
 - [https://github.com/connormcgarr/tgtdelegation/tree/master](https://github.com/connormcgarr/tgtdelegation/tree/master)
