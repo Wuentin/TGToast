@@ -1,4 +1,3 @@
-# TGToast
 
 ```
  .\TGToast.exe
@@ -126,6 +125,10 @@ python3 tgtParse.py --apreq <BASE64_APREQ> --sessionkey <BASE64_KEY> --etype <AE
 There are a few limitations, it doesn't work if the target accounts are:
 - member of protected users;
 - account is sensitive and cannot be delegated.
+## Overview
+Attack flow diagram showing how TGTToast steals process tokens, impersonates users, and abuses Kerberos delegation APIs to extract usable TGTs.
+
+<img width="1082" height="1751" alt="image" src="https://github.com/user-attachments/assets/7f6cf0a2-e037-4bbf-86b8-e3f47a420922" />
 
 ## Credits
 Many thanks to these projects, all I did was put the ideas together.
